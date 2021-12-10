@@ -6,6 +6,7 @@ import math
 import struct
 import peakfinder_utils as pfu
 import pulse as p
+import tables
 
 class PeakfinderTB( object ):
   """
@@ -37,6 +38,49 @@ class PeakfinderTB( object ):
     # Consecutive hits (in neighbouring bx)
     self.consec_cnt = 0
 
+  def input_process_ubcm(self):
+    self.input_filename = "crate1.amc1_chA"
+    raw_data_path = "/home/bril_firmware/Documents/peakfindertb/raw_data/"
+    filepath = raw_data_path + "stable_1000orbits_bcm1f." + self.input_filename + ".bin"
+    # Read file
+    self._input_data = []
+    with open(filepath, "rb") as self._input_file:
+      for byte_list in pfu.read_binary(self._input_file, self.raw_orb_size):
+        self._input_data.append( [struct.unpack('B', byte_list[i])[0] for i in range(self.raw_orb_size - self.orb_excess)] )
+
+  def input_process_daq(self):
+    self.input_filename = "daq_data"
+    # process file with daq data
+    daq_input = open("daq_input.dat", "r")
+    daq_input_lines = daq_input.readlines()
+    daq_filepath = daq_input_lines[0][:-2]
+    # read file
+    self._input_data = []
+    for line in daq_input_lines[1:]:
+      line_split = line.split(",")
+      filename = line_split[0]
+      runnum = int(line_split[1])
+      lsnum = int(line_split[2])
+      nbnum = int(line_split[3])
+      channelid = int(line_split[4])
+      h5file = tables.open_file(daq_filepath+"/"+filename, "r")
+      if "/bcm1futcarawdata" in h5file:
+        for row in h5file.get_node("/bcm1futcarawdata").iterrows():
+          if row['algoid'] == 100 and row['runnum'] == runnum and row['lsnum'] == lsnum and row['channelid'] == channelid:
+            self._input_data.append(row['data'][:(self.raw_orb_size - self.orb_excess)])
+            break
+      h5file.close()
+
+  def input_process(self):
+    #self.input_process_ubcm()
+    self.input_process_daq()
+
+  def input_get_next_orbit(self):
+    if len(self._input_data) > 0:
+      return self._input_data.pop(0)
+    else:
+      return []
+
   @cocotb.coroutine
   def reset( self, clk, rst, duration=10000  ):
     """
@@ -54,13 +98,6 @@ class PeakfinderTB( object ):
     """
     Feeding data into samples input, one bx at a time.
     """
-    # with open( filepath, "rb") as f:
-      # for byte_list in pfu.read_binary( f, self.raw_orb_size ):
-      #   self.orb_cnt += 1
-      #   if iter_max>0 and self.orb_cnt > iter_max: break
-      #   self.dut._log.info(pfu.string_color("Orbit " + str(self.orb_cnt), "blue"))
-      #   # struct.unpack: Convert one orbit of binary data into list of uint8 samples
-      #   data = [ struct.unpack( 'B', byte_list[i] )[0] for i in range(self.raw_orb_size - 3672) ]
     for bx in range( len(data) / self.NSAMP ):
       self.bx_cnt = bx
       self.dut.samples = data[ (bx*self.NSAMP) : (bx*self.NSAMP)+self.NSAMP ]
@@ -130,11 +167,8 @@ class PeakfinderTB( object ):
         prev = False
         continue
       elif d > THR and prev == True:
-        
         prev = True
-      
-      if prev == True:
-
+      #if prev == True:
 
     # derivative = pfu.snrd( data, 7 )
 
@@ -144,10 +178,9 @@ class PeakfinderTB( object ):
 ###############################
 ## TEST FUNCTIONS
 ###############################
-
 @cocotb.test()
-def derivative_model( dut )
-
+def derivative_model( dut ):
+  pass
 
 @cocotb.test()
 def parallel_test( dut, iter_max=2 ):
@@ -166,21 +199,21 @@ def parallel_test( dut, iter_max=2 ):
   cocotb.fork( Clock(dut.bunch_clk, 30000, 'ps').start() )
   yield tb.reset( dut.bunch_clk, dut.srst )
   cocotb.fork( tb.prallel_producer() )
-  filename = "crate1.amc1_chA"
-  raw_data_path = "/home/bril_firmware/Documents/peakfindertb/raw_data/"
-  filepath = raw_data_path + "stable_1000orbits_bcm1f." + filename + ".bin"
-  # Read file
-  with open( filepath, "rb") as f:
-    for byte_list in pfu.read_binary( f, tb.raw_orb_size ):
-      tb.orb_cnt += 1
-      if iter_max>0 and tb.orb_cnt > iter_max: break
-      data = [ struct.unpack( 'B', byte_list[i] )[0] for i in range(tb.raw_orb_size - 3672) ]
-      # Feed data
-      yield tb.drive_samples( clk=dut.bunch_clk, input_signal=dut.samples, data=data )
+  # process input
+  tb.input_process()
+  # inject
+  while True:
+    # count orbits
+    tb.orb_cnt += 1
+    if iter_max>0 and tb.orb_cnt > iter_max: break
+    data = tb.input_get_next_orbit()
+    if len(data) == 0: break
+    # Feed data
+    yield tb.drive_samples( clk=dut.bunch_clk, input_signal=dut.samples, data=data )
 
   dut._log.info( pfu.string_color("Quick stat: Detected ", "green") + pfu.string_color( str(len(tb.pulses)), "yellow") + pfu.string_color(" pulses", "green") )
   dut._log.info( pfu.string_color("Out of which ", "green") + pfu.string_color( str(tb.consec_cnt), "yellow") + pfu.string_color(" were consecutive.", "green") )
-  pfu.write_pulses( "../results/PARALLELTEST"+filename+"_lvlthr"+str(level_threshold)+"_totthr"+str(tot_threshold), tb.pulses )
+  pfu.write_pulses( "../results/PARALLELTEST"+tb.input_filename+"_lvlthr"+str(level_threshold)+"_totthr"+str(tot_threshold), tb.pulses )
 
 @cocotb.test()
 def derivative_test( dut, iter_max=2 ):
@@ -201,19 +234,20 @@ def derivative_test( dut, iter_max=2 ):
   cocotb.fork( Clock(dut.clk, 30000, 'ps').start() )
   yield tb.reset( dut.clk, dut.rst )
   cocotb.fork( tb.derivative_producer() )
-  filename = "crate1.amc1_chC"
-  raw_data_path = "/home/bril_firmware/Documents/peakfindertb/raw_data/"
-  filepath = raw_data_path + "stable_1000orbits_bcm1f." + filename + ".bin"
-  with open( filepath, "rb") as f:
-    for byte_list in pfu.read_binary( f, tb.raw_orb_size ):
-      tb.orb_cnt += 1
-      if iter_max>0 and tb.orb_cnt > iter_max: break
-      data = [ struct.unpack( 'B', byte_list[i] )[0] for i in range(tb.raw_orb_size - 3672) ]
-      # Feed data
-      yield tb.drive_samples( clk=dut.clk, input_signal=dut.samples, data=data )
+  # process input
+  tb.input_process()
+  # inject
+  while True:
+    # count orbits
+    tb.orb_cnt += 1
+    if iter_max > 0 and tb.orb_cnt > iter_max: break
+    data = tb.input_get_next_orbit()
+    if len(data) == 0: break
+    # Feed data
+    yield tb.drive_samples(clk=dut.bunch_clk, input_signal=dut.samples, data=data)
 
   dut._log.info( pfu.string_color("Quick stat: Detected ", "green") + pfu.string_color( str(len(tb.pulses)), "yellow") + pfu.string_color(" pulses", "green") )
-  pfu.write_pulses( "../results/DERIVATIVETEST"+filename+"_deriv_thr"+str(deriv_thr)+"_val_thr"+str(val_thr), tb.pulses )
+  pfu.write_pulses( "../results/DERIVATIVETEST"+tb.input_filename+"_deriv_thr"+str(deriv_thr)+"_val_thr"+str(val_thr), tb.pulses )
 
 
 

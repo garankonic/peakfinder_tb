@@ -118,9 +118,9 @@ def recon( filename, pulses, raw_orb_size=((3564*30)) ): #-3672
 
 def snrd( in_data, win_size=7 ):
   if win_size not in [5, 7, 9]:
-    raise ValueError, "win_size wrong, has to be one of [5,7,9]"
+    raise ValueError("win_size wrong, has to be one of [5,7,9]")
   if len(in_data) < win_size:
-    raise ValueError, "Not enough input samples for that win_size"
+    raise ValueError("Not enough input samples for that win_size")
   wing = (win_size - 1) / 2
   len_data = len( in_data )
   deriv = [0] * wing
@@ -132,7 +132,7 @@ def snrd( in_data, win_size=7 ):
     elif win_size == 9:
       snrd = ( 14 * ( in_data[x+1] - in_data[x-1] ) + 14 * ( in_data[x+2] - in_data[x-2] ) + 6 * ( in_data[x+3] - in_data[x-3] ) + in_data[x+4] - in_data[x-4] ) / 4 #128
     else:
-      raise ValueError, "Unallowed win_size"
+      raise ValueError("Unallowed win_size")
     deriv.append( snrd )
   deriv.extend( [0] * wing )
   return deriv

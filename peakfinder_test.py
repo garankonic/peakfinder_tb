@@ -37,6 +37,8 @@ class PeakfinderTB( object ):
     self.pulses = []
     # Consecutive hits (in neighbouring bx)
     self.consec_cnt = 0
+    # reg map to be filled for exact tb
+    self.reg_map = {}
 
   def input_process_ubcm(self):
     self.input_filename = "crate1.amc1_chA"
@@ -53,6 +55,7 @@ class PeakfinderTB( object ):
     # process file with daq data
     daq_input = open("daq_input.dat", "r")
     daq_input_lines = daq_input.readlines()
+    daq_input.close()
     daq_filepath = daq_input_lines[0][:-2]
     # read file
     self._input_data = []
@@ -66,7 +69,7 @@ class PeakfinderTB( object ):
       h5file = tables.open_file(daq_filepath+"/"+filename, "r")
       if "/bcm1futcarawdata" in h5file:
         for row in h5file.get_node("/bcm1futcarawdata").iterrows():
-          if row['algoid'] == 100 and row['runnum'] == runnum and row['lsnum'] == lsnum and row['channelid'] == channelid:
+          if row['algoid'] == 100 and row['runnum'] == runnum and row['lsnum'] == lsnum and row['nbnum'] == nbnum and row['channelid'] == channelid:
             self._input_data.append(row['data'][:(self.raw_orb_size - self.orb_excess)])
             break
       h5file.close()
@@ -82,15 +85,17 @@ class PeakfinderTB( object ):
       return []
 
   @cocotb.coroutine
-  def reset( self, clk, rst, duration=10000  ):
+  def reset( self, clk, rst, duration=10):
     """
     Basic resetting routine.
     """
     self.dut._log.info(pfu.string_color("Resetting DUT.", "blue"))
-    rst <= 1
-    yield Timer(duration)
-    yield RisingEdge( clk )
-    rst <= 0
+    rst.value = 1
+    for i in range(duration):
+      yield RisingEdge(clk)
+    rst.value = 0
+    for i in range(duration):
+      yield RisingEdge(clk)
     self.dut._log.info(pfu.string_color("Reset complete.", "blue"))
 
   @cocotb.coroutine
@@ -98,9 +103,10 @@ class PeakfinderTB( object ):
     """
     Feeding data into samples input, one bx at a time.
     """
-    for bx in range( len(data) / self.NSAMP ):
+    for bx in range( int (len(data) / self.NSAMP) ):
       self.bx_cnt = bx
-      self.dut.samples = data[ (bx*self.NSAMP) : (bx*self.NSAMP)+self.NSAMP ]
+      for i in range(self.NSAMP):
+        self.dut.samples[i].value = int(data[ (bx*self.NSAMP) + i ])
       yield RisingEdge( clk )
 
   @cocotb.coroutine
@@ -139,13 +145,15 @@ class PeakfinderTB( object ):
     TODO: "No coroutines waiting on trigger that fired: RisingEdge(peaks(1))" -> solved with yielding to ReadOnly after RisingEdge
     """
     while True:
-      yield [ RisingEdge(self.dut.peaks[i]) for i in range(self.dut.NPEAKSMAX) ]
-      yield ReadOnly()
+      yield RisingEdge(self.dut.clk)
+      if self.dut.peaks.value == 0:
+        continue
       if self.dut.peaks==3 or self.dut.peaks==5 or self.dut.peaks==6 or self.dut.peaks==7:
-        self.dut._log.info( pfu.string_color("Dobule Pulse!", "yellow") )
-      for i in range( self.dut.NPEAKSMAX ):
-        detected_pulse = p.pulse( orbit=self.orb_cnt, bx=self.bx_cnt, amplitude=int(self.dut.peaks_val[i]), position=int(self.dut.peaks_pos[i]), tot=None )
-        self.pulses.append( detected_pulse )
+        self.dut._log.info( pfu.string_color("Double Pulse!", "yellow") )
+      for i in range( self.dut.NPEAKSMAX.value ):
+        if int(self.dut.peaks[i].value) > 0:
+          detected_pulse = p.pulse( orbit=self.orb_cnt, bx=self.bx_cnt, amplitude=int(self.dut.peaks_val[i]), position=int(self.dut.peaks_pos[i]), tot=None )
+          self.pulses.append( detected_pulse )
       trig = True
       while trig:
         yield RisingEdge( self.dut.clk )
@@ -172,7 +180,88 @@ class PeakfinderTB( object ):
 
     # derivative = pfu.snrd( data, 7 )
 
+  # ipbus related commands
+  def init_ipb(self):
+    # init ipb
+    self.dut.ipb_mosi_i.ipb_strobe.value = 0
+    self.dut.ipb_mosi_i.ipb_write.value = 0
+    self.dut.ipb_mosi_i.ipb_addr.value = 0
+    self.dut.ipb_mosi_i.ipb_wdata.value = 0
 
+  def shiftToMask(self, mask, data):
+    shift_val = 0
+    mask_copy = mask
+    while (mask_copy & 0x1 == 0):
+      mask_copy = mask_copy >> 1
+      shift_val += 1
+    return (data << shift_val) & mask
+
+  def shiftFromMask(self, mask, data):
+    shift_val = 0
+    mask_copy = mask
+    while (mask_copy & 0x1 == 0):
+      mask_copy = mask_copy >> 1
+      shift_val += 1
+    return (data & mask) >> shift_val
+
+  @cocotb.coroutine
+  def read(self, reg_name, applyMask=True):
+    if not (reg_name in self.reg_map.keys()):
+      raise ValueError("Failed IPbus read: unknown register")
+      return []
+    yield RisingEdge(self.dut.ipb_clk)
+    self.dut.ipb_mosi_i.ipb_strobe.value = 1
+    self.dut.ipb_mosi_i.ipb_write.value = 0
+    self.dut.ipb_mosi_i.ipb_addr.value = self.reg_map[reg_name][0]
+    self.dut.ipb_mosi_i.ipb_wdata.value = 0
+    yield RisingEdge(self.dut.ipb_clk)
+    res = self.shiftFromMask(self.reg_map[reg_name][1], int(self.dut.ipb_miso_o.ipb_rdata.value)) if applyMask else int(
+      self.dut.ipb_miso_o.ipb_rdata.value)
+    timeout = 0
+    while (self.dut.ipb_miso_o.ipb_ack.value == 0):
+      yield RisingEdge(self.dut.ipb_clk)
+      res = self.shiftFromMask(self.reg_map[reg_name][1], int(self.dut.ipb_miso_o.ipb_rdata.value)) if applyMask else int(
+        self.dut.ipb_miso_o.ipb_rdata.value)
+      timeout += 1
+      if timeout >= 10:
+        raise RuntimeError("Failed IPbus read")
+        break
+    self.dut.ipb_mosi_i.ipb_strobe.value = 0
+    self.dut.ipb_mosi_i.ipb_write.value = 0
+    self.dut.ipb_mosi_i.ipb_addr.value = 0
+    self.dut.ipb_mosi_i.ipb_wdata.value = 0
+    self.dut.ipb_mosi_i._log.debug("Success IPbus read : %d" % (res))
+    return [res]
+
+  @cocotb.coroutine
+  def write(self, reg_name, data):
+    if not (reg_name in self.reg_map.keys()):
+      raise ValueError("Failed IPbus write: unknown register")
+      return [1]
+    mask = self.reg_map[reg_name][1]
+    data_to_write = self.shiftToMask(mask, data)
+    if mask != 0xffffffff:
+      current_value = yield self.read(reg_name, False)
+      data_to_write |= (current_value[0] & ~mask)
+    yield RisingEdge(self.dut.ipb_clk)
+    self.dut.ipb_mosi_i.ipb_strobe.value = 1
+    self.dut.ipb_mosi_i.ipb_write.value = 1
+    self.dut.ipb_mosi_i.ipb_addr.value = self.reg_map[reg_name][0]
+    self.dut.ipb_mosi_i.ipb_wdata.value = data_to_write
+    yield RisingEdge(self.dut.ipb_clk)
+    timeout = 0
+    while (self.dut.ipb_miso_o.ipb_ack.value == 0):
+      yield RisingEdge(self.dut.ipb_clk)
+      timeout += 1
+      if timeout >= 10:
+        raise RuntimeError("Failed IPbus write")
+        break
+    self.dut.ipb_mosi_i.ipb_strobe.value = 0
+    self.dut.ipb_mosi_i.ipb_write.value = 0
+    self.dut.ipb_mosi_i.ipb_addr.value = 0
+    self.dut.ipb_mosi_i.ipb_wdata.value = 0
+    self.dut.ipb_mosi_i._log.debug("Success IPbus write")
+    return [0]
 
 
 ###############################
@@ -192,12 +281,15 @@ def parallel_test( dut, iter_max=2 ):
   dut._log.info(pfu.string_color("Setting thresholds.", "blue"))
   level_threshold = 130
   tot_threshold = 3
-  dut.level_threshold <= level_threshold
-  dut.tot_threshold <= tot_threshold
+  dut.level_threshold.value = level_threshold
+  dut.tot_threshold.value = tot_threshold
   # Start
-  dut.enabled <= 1
-  cocotb.fork( Clock(dut.bunch_clk, 30000, 'ps').start() )
-  yield tb.reset( dut.bunch_clk, dut.srst )
+  dut.enabled.value = 1
+  cocotb.fork( Clock(dut.clk, 25000, 'ps').start() )
+  cocotb.fork(Clock(dut.clk80, 12500, 'ps').start())
+  cocotb.fork(Clock(dut.ipb_clk, 32500, 'ps').start())
+  yield tb.reset( dut.clk, dut.ipb_rst )
+  yield tb.reset( dut.clk, dut.srst )
   cocotb.fork( tb.prallel_producer() )
   # process input
   tb.input_process()
@@ -209,7 +301,7 @@ def parallel_test( dut, iter_max=2 ):
     data = tb.input_get_next_orbit()
     if len(data) == 0: break
     # Feed data
-    yield tb.drive_samples( clk=dut.bunch_clk, input_signal=dut.samples, data=data )
+    yield tb.drive_samples( clk=dut.clk, input_signal=dut.samples, data=data )
 
   dut._log.info( pfu.string_color("Quick stat: Detected ", "green") + pfu.string_color( str(len(tb.pulses)), "yellow") + pfu.string_color(" pulses", "green") )
   dut._log.info( pfu.string_color("Out of which ", "green") + pfu.string_color( str(tb.consec_cnt), "yellow") + pfu.string_color(" were consecutive.", "green") )
@@ -221,18 +313,33 @@ def derivative_test( dut, iter_max=2 ):
   Parallel_analyzer.vhd basic test function
   """
   tb = PeakfinderTB( dut )
+  # register map
+  tb.reg_map["deriv_thr"] = (0x0, 0x00000FFF)
+  tb.reg_map["top"] = (0x1, 0x0000000F)
+  tb.reg_map["val_thr"] = (0x2, 0x00000FFF)
+  # init ipb and samples
+  dut.ipb_rst.value = 1
+  dut.rst.value = 1
+  tb.init_ipb()
+  for i in range(tb.NSAMP):
+    dut.samples[i].value = 0
   # Setting thresholds
   dut._log.info(pfu.string_color("Setting thresholds.", "blue"))
-  TOP = 3
+  top = 3
   deriv_thr = 15
   val_thr = 40
-  dut.TOP = TOP
-  dut.deriv_thr <= deriv_thr
-  dut.val_thr <= val_thr
   # Start
   dut._log.info(pfu.string_color("Starting bunch clock.", "blue"))
-  cocotb.fork( Clock(dut.clk, 30000, 'ps').start() )
-  yield tb.reset( dut.clk, dut.rst )
+  cocotb.fork(Clock(dut.clk, 25000, 'ps').start())
+  cocotb.fork(Clock(dut.clk80, 12500, 'ps').start())
+  cocotb.fork(Clock(dut.ipb_clk, 32500, 'ps').start())
+  yield tb.reset(dut.clk, dut.ipb_rst)
+  yield tb.reset(dut.clk, dut.rst)
+  # now write ipbus registers
+  yield tb.write("top", top)
+  yield tb.write("deriv_thr", deriv_thr)
+  yield tb.write("val_thr", val_thr)
+  # run producer
   cocotb.fork( tb.derivative_producer() )
   # process input
   tb.input_process()
@@ -244,7 +351,7 @@ def derivative_test( dut, iter_max=2 ):
     data = tb.input_get_next_orbit()
     if len(data) == 0: break
     # Feed data
-    yield tb.drive_samples(clk=dut.bunch_clk, input_signal=dut.samples, data=data)
+    yield tb.drive_samples(clk=dut.clk, input_signal=dut.samples, data=data)
 
   dut._log.info( pfu.string_color("Quick stat: Detected ", "green") + pfu.string_color( str(len(tb.pulses)), "yellow") + pfu.string_color(" pulses", "green") )
   pfu.write_pulses( "../results/DERIVATIVETEST"+tb.input_filename+"_deriv_thr"+str(deriv_thr)+"_val_thr"+str(val_thr), tb.pulses )

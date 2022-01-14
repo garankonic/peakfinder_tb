@@ -47,7 +47,7 @@ else
 endif
 
 ## Specify simulation time step
-VSIM_ARGS = -t 1ns
+VSIM_ARGS = -t 1ps
 
 # include sim
 include $(shell cocotb-config --makefiles)/Makefile.sim

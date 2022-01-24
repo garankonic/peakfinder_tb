@@ -7,6 +7,7 @@ import struct
 import peakfinder_utils as pfu
 import pulse as p
 import tables
+import matplotlib.pyplot as plt
 
 class PeakfinderTB( object ):
   """
@@ -99,7 +100,7 @@ class PeakfinderTB( object ):
     self.dut._log.info(pfu.string_color("Reset complete.", "blue"))
 
   @cocotb.coroutine
-  def drive_samples( self, clk, input_signal, data ):
+  def drive_samples( self, clk, input_signal, data, plot = False ):
     """
     Feeding data into samples input, one bx at a time.
     """
@@ -108,6 +109,11 @@ class PeakfinderTB( object ):
       for i in range(self.NSAMP):
         self.dut.samples[i].value = int(data[ (bx*self.NSAMP) + i ])
       yield RisingEdge( clk )
+    # plot if needed
+    if plot:
+      x = [number/self.NSAMP for number in list(range(self.raw_orb_size - self.orb_excess))]
+      plt.plot(x, data)
+      plt.show()
 
   @cocotb.coroutine
   def prallel_producer( self ):
@@ -325,7 +331,7 @@ def derivative_test( dut, iter_max=2 ):
     dut.samples[i].value = 0
   # Setting thresholds
   dut._log.info(pfu.string_color("Setting thresholds.", "blue"))
-  top = 3
+  top = 4
   deriv_thr = 15
   val_thr = 40
   # Start

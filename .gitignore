@@ -4,4 +4,6 @@ sim_build/
 modelsim.ini
 results.xml
 transcript
+vsim.wlf
+vsim_stacktrace.vstf
 unisim/

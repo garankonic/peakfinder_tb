@@ -24,6 +24,7 @@ class PeakfinderTB( object ):
     self.dut = dut
     # Number of samples per bx
     self.NSAMP = int(self.dut.NSAMPLES)
+    self.NBINS = int(self.dut.NBINS)
     # No. of bx per orbit
     self.orb_size = 3564
     # Raw data orbit is <orb_excess> samples longer than normal orbit (firmware specific)
@@ -186,14 +187,6 @@ class PeakfinderTB( object ):
 
     # derivative = pfu.snrd( data, 7 )
 
-  # ipbus related commands
-  def init_ipb(self):
-    # init ipb
-    self.dut.ipb_mosi_i.ipb_strobe.value = 0
-    self.dut.ipb_mosi_i.ipb_write.value = 0
-    self.dut.ipb_mosi_i.ipb_addr.value = 0
-    self.dut.ipb_mosi_i.ipb_wdata.value = 0
-
   def shiftToMask(self, mask, data):
     shift_val = 0
     mask_copy = mask
@@ -218,7 +211,7 @@ class PeakfinderTB( object ):
     yield RisingEdge(self.dut.ipb_clk)
     self.dut.ipb_mosi_i.ipb_strobe.value = 1
     self.dut.ipb_mosi_i.ipb_write.value = 0
-    self.dut.ipb_mosi_i.ipb_addr.value = self.reg_map[reg_name][0]
+    self.dut.ipb_mosi_i.ipb_addr.value = int(self.reg_map[reg_name][0])
     self.dut.ipb_mosi_i.ipb_wdata.value = 0
     yield RisingEdge(self.dut.ipb_clk)
     res = self.shiftFromMask(self.reg_map[reg_name][1], int(self.dut.ipb_miso_o.ipb_rdata.value)) if applyMask else int(
@@ -252,7 +245,7 @@ class PeakfinderTB( object ):
     yield RisingEdge(self.dut.ipb_clk)
     self.dut.ipb_mosi_i.ipb_strobe.value = 1
     self.dut.ipb_mosi_i.ipb_write.value = 1
-    self.dut.ipb_mosi_i.ipb_addr.value = self.reg_map[reg_name][0]
+    self.dut.ipb_mosi_i.ipb_addr.value = int(self.reg_map[reg_name][0])
     self.dut.ipb_mosi_i.ipb_wdata.value = data_to_write
     yield RisingEdge(self.dut.ipb_clk)
     timeout = 0
@@ -323,10 +316,16 @@ def derivative_test( dut, iter_max=2 ):
   tb.reg_map["deriv_thr"] = (0x0, 0x00000FFF)
   tb.reg_map["top"] = (0x1, 0x0000000F)
   tb.reg_map["val_thr"] = (0x2, 0x00000FFF)
+  tb.reg_map["bin_LUT_0"] = (0x3, 0xFFFFFFFF)
+  tb.reg_map["bin_LUT_1"] = (0x4, 0xFFFFFFFF)
+  tb.reg_map["bin_LUT_2"] = (0x5, 0xFFFFFFFF)
   # init ipb and samples
   dut.ipb_rst.value = 1
   dut.rst.value = 1
-  tb.init_ipb()
+  dut.ipb_mosi_i.ipb_strobe.value = 0
+  dut.ipb_mosi_i.ipb_write.value = 0
+  dut.ipb_mosi_i.ipb_addr.value = 0
+  dut.ipb_mosi_i.ipb_wdata.value = 0
   for i in range(tb.NSAMP):
     dut.samples[i].value = 0
   # Setting thresholds
@@ -334,6 +333,15 @@ def derivative_test( dut, iter_max=2 ):
   top = 4
   deriv_thr = 15
   val_thr = 40
+  # Bin LUTs
+  lut = [int((i * tb.NBINS) / tb.NSAMP) for i in range(tb.NSAMP)]
+  lut_0 = 0
+  lut_1 = 0
+  lut_2 = 0
+  for i in range(10):
+    lut_0 |= lut[i] << 3 * i
+    lut_1 |= lut[i + 10] << 3 * i
+    lut_2 |= lut[i + 20] << 3 * i
   # Start
   dut._log.info(pfu.string_color("Starting bunch clock.", "blue"))
   cocotb.fork(Clock(dut.clk, 25000, 'ps').start())
@@ -345,6 +353,9 @@ def derivative_test( dut, iter_max=2 ):
   yield tb.write("top", top)
   yield tb.write("deriv_thr", deriv_thr)
   yield tb.write("val_thr", val_thr)
+  yield tb.write("bin_LUT_0", lut_0)
+  yield tb.write("bin_LUT_1", lut_1)
+  yield tb.write("bin_LUT_2", lut_2)
   # run producer
   cocotb.fork( tb.derivative_producer() )
   # process input
@@ -359,7 +370,7 @@ def derivative_test( dut, iter_max=2 ):
     # Feed data
     yield tb.drive_samples(clk=dut.clk, input_signal=dut.samples, data=data)
 
-  dut._log.info( pfu.string_color("Quick stat: Detected ", "green") + pfu.string_color( str(len(tb.pulses)), "yellow") + pfu.string_color(" pulses", "green") )
+  dut._log.info("Quick stat: Detected " + str(len(tb.pulses)) + " pulses")
   pfu.write_pulses( "../results/DERIVATIVETEST"+tb.input_filename+"_deriv_thr"+str(deriv_thr)+"_val_thr"+str(val_thr), tb.pulses )
 
 

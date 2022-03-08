@@ -4,12 +4,8 @@
 UBCM_FW_SRC = $(UBCM_PATH)/fw/fpga/src
 UBCM_MODULES = $(UBCM_FW_SRC)/user/modules
 
-COCOTB_LOG_LEVEL = ERROR
-COCOTB_REDUCED_LOG_FMT = ERROR
-
-SIM = modelsim
+SIM = riviera
 TOPLEVEL_LANG = vhdl
-
 MODULE = peakfinder_test
 
 ifeq ($(TESTCASE),derivative_test)
@@ -47,7 +43,11 @@ else
 endif
 
 ## Specify simulation time step
-VSIM_ARGS = -t 1ps
+ifeq ($(SIM),riviera)
+    ACOM_ARGS = -2002
+else ifeq ($(SIM),modelsim)
+    VSIM_ARGS = -t 1ps
+endif
 
 # include sim
 include $(shell cocotb-config --makefiles)/Makefile.sim

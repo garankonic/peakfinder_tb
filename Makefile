@@ -9,7 +9,7 @@ TOPLEVEL_LANG = vhdl
 MODULE = peakfinder_test
 
 ifeq ($(TESTCASE),derivative_test)
-	TOPLEVEL = derivative_peakfinder
+	TOPLEVEL = derivative_peakfinder_wrapper
 else ifeq ($(TESTCASE),parallel_test)
 	TOPLEVEL = parallel_analyzer
 else
@@ -20,7 +20,7 @@ endif
 # Which means packages first
 # Dont forget to include the Unisim path in the modelsim.ini
 # Design Resources
-ifeq ($(TOPLEVEL),derivative_peakfinder)
+ifeq ($(TOPLEVEL),derivative_peakfinder_wrapper)
     VHDL_SOURCES = 	$(UBCM_MODULES)/peakfinder/peakfinder_pkg.vhd \
 					$(UBCM_FW_SRC)/user/usr_bcm1f/data_package.vhd \
 					$(UBCM_FW_SRC)/user/usr_bcm1f/functions_package.vhd \
@@ -32,7 +32,8 @@ ifeq ($(TOPLEVEL),derivative_peakfinder)
 					$(UBCM_MODULES)/peakfinder/diff_m7.vhd \
 					$(UBCM_MODULES)/peakfinder/deriv_buffer.vhd \
 					$(UBCM_MODULES)/peakfinder/integrator.vhd \
-					$(UBCM_MODULES)/peakfinder/derivative_peakfinder.vhd
+					$(UBCM_MODULES)/peakfinder/derivative_peakfinder.vhd \
+					derivative_peakfinder_wrapper.vhd
 else ifeq ($(TOPLEVEL),parallel_analyzer)
 	VHDL_SOURCES = 	$(UBCM_FW_SRC)/user/usr_bcm1f/data_package.vhd \
 					$(UBCM_FW_SRC)/user/usr_bcm1f/functions_package.vhd \

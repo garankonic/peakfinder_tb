@@ -5,7 +5,6 @@ from cocotb.regression import TestFactory
 import math
 import struct
 import peakfinder_utils as pfu
-import pulse as p
 import tables
 import matplotlib.pyplot as plt
 
@@ -39,6 +38,10 @@ class PeakfinderTB( object ):
     self.pulses = []
     # Consecutive hits (in neighbouring bx)
     self.consec_cnt = 0
+    # Storing waveforms (buffer size is the actual latency of the peak with respect to the bx)
+    self.deriv_buffer = pfu.RingBuffer(8 + 1)
+    self.sample_buffer = pfu.RingBuffer(12 + 1)
+    self.waveforms = []
     # reg map to be filled for exact tb
     self.reg_map = {}
 
@@ -62,6 +65,8 @@ class PeakfinderTB( object ):
     # read file
     self._input_data = []
     for line in daq_input_lines[1:]:
+      if line[0] == "#":
+        continue
       line_split = line.split(",")
       filename = line_split[0]
       runnum = int(line_split[1])
@@ -128,7 +133,7 @@ class PeakfinderTB( object ):
     while True:
       yield [ RisingEdge(self.dut.peaks[i]) for i in range(self.NSAMP) ]
       yield ReadOnly()
-      detected_pulse = p.pulse( orbit=self.orb_cnt, bx=self.bx_cnt, amplitude=int(self.dut.local_maximum), position=int(math.log(int(self.dut.peaks),2)), tot=int(self.dut.time_over_threshold) )
+      detected_pulse = pfu.pulse( orbit=self.orb_cnt, bx=self.bx_cnt, amplitude=int(self.dut.local_maximum), position=int(math.log(int(self.dut.peaks),2)), tot=int(self.dut.time_over_threshold) )
       self.pulses.append( detected_pulse )
       trig = True
       while trig:
@@ -137,7 +142,7 @@ class PeakfinderTB( object ):
         if int(self.dut.peaks) > 0:
           # self.dut._log.info( pfu.string_color("CONSECUTIVE", "yellow") )
           self.consec_cnt += 1
-          detected_pulse = p.pulse( orbit=self.orb_cnt, bx=self.bx_cnt, amplitude=int(self.dut.local_maximum), position=int(math.log(int(self.dut.peaks),2)), tot=int(self.dut.time_over_threshold) )
+          detected_pulse = pfu.pulse( orbit=self.orb_cnt, bx=self.bx_cnt, amplitude=int(self.dut.local_maximum), position=int(math.log(int(self.dut.peaks),2)), tot=int(self.dut.time_over_threshold) )
           self.pulses.append( detected_pulse )
           trig = True
         else:
@@ -153,24 +158,36 @@ class PeakfinderTB( object ):
     """
     while True:
       yield RisingEdge(self.dut.clk)
+      # store waveforms
+      self.sample_buffer.append(self.dut.derivative_peakfinder_inst.samples.value)
+      self.deriv_buffer.append(self.dut.derivative_peakfinder_inst.deriv_s.value)
+      # peak detect
       if self.dut.peaks.value == 0:
         continue
       if self.dut.peaks==3 or self.dut.peaks==5 or self.dut.peaks==6 or self.dut.peaks==7:
         self.dut._log.info( pfu.string_color("Double Pulse!", "yellow") )
       for i in range( self.dut.NPEAKSMAX.value ):
         if int(self.dut.peaks[i].value) > 0:
-          detected_pulse = p.pulse( orbit=self.orb_cnt, bx=self.bx_cnt, amplitude=int(self.dut.peaks_val[i]), position=int(self.dut.peaks_pos[i]), tot=None )
+          detected_pulse = pfu.pulse( orbit=self.orb_cnt, bx=self.bx_cnt, amplitude=int(self.dut.peaks_val[i]), position=int(self.dut.peaks_pos[i]), tot=None )
           self.pulses.append( detected_pulse )
+      # append waveforms
+      sample_converted = [x.integer for x in self.sample_buffer.get()[0]]
+      self.waveforms.append(pfu.waveform(orbit=self.orb_cnt, bx=self.bx_cnt, type="sample", waveform=sample_converted))
+      derivative_converted = [x.signed_integer for x in self.deriv_buffer.get()[0]]
+      self.waveforms.append(pfu.waveform(orbit=self.orb_cnt, bx=self.bx_cnt, type="derivative", waveform=derivative_converted))
       trig = True
       while trig:
         yield RisingEdge( self.dut.clk )
+        # store waveforms
+        self.sample_buffer.append(self.dut.derivative_peakfinder_inst.samples.value)
+        self.deriv_buffer.append(self.dut.derivative_peakfinder_inst.deriv_s.value)
         yield ReadOnly()
         if int(self.dut.peaks) > 0:
           for i in range( self.dut.NPEAKSMAX ):
             if self.dut.peaks[i]:
               # self.dut._log.info( pfu.string_color("CONSECUTIVE", "yellow") )
               self.consec_cnt += 1
-              detected_pulse = p.pulse( orbit=self.orb_cnt, bx=self.bx_cnt, amplitude=int(self.dut.peaks_val[i]), position=int(self.dut.peaks_pos[i]), tot=None )
+              detected_pulse = pfu.pulse( orbit=self.orb_cnt, bx=self.bx_cnt, amplitude=int(self.dut.peaks_val[i]), position=int(self.dut.peaks_pos[i]), tot=None )
               self.pulses.append( detected_pulse )
           trig = True
         else:
@@ -330,8 +347,8 @@ def derivative_test( dut, iter_max=2 ):
     dut.samples[i].value = 0
   # Setting thresholds
   dut._log.info(pfu.string_color("Setting thresholds.", "blue"))
-  top = 4
-  deriv_thr = 15
+  top = 1
+  deriv_thr = 2
   val_thr = 40
   # Bin LUTs
   lut = [int((i * tb.NBINS) / tb.NSAMP) for i in range(tb.NSAMP)]
@@ -371,7 +388,7 @@ def derivative_test( dut, iter_max=2 ):
     yield tb.drive_samples(clk=dut.clk, input_signal=dut.samples, data=data)
 
   dut._log.info("Quick stat: Detected " + str(len(tb.pulses)) + " pulses")
-  pfu.write_pulses( "../results/DERIVATIVETEST"+tb.input_filename+"_deriv_thr"+str(deriv_thr)+"_val_thr"+str(val_thr), tb.pulses )
+  pfu.write_pulses( "../results/DERIVATIVETEST"+tb.input_filename+"_deriv_thr"+str(deriv_thr)+"_val_thr"+str(val_thr), tb.pulses, tb.waveforms )
 
 
 

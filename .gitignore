@@ -1,3 +1,6 @@
+compile
+*asdb
+library.cfg
 *.pyc
 results/*
 sim_build/

@@ -7,8 +7,37 @@ import matplotlib.pyplot as plt
 import numpy as np
 import csv
 import sys
-import pulse as p
 import struct
+
+class pulse( object ):
+  """
+  The pulse() class is describing a detected pulse (event).
+  orbit: Orbit number
+  bx: Bunch crossing number of respective orbit.
+  amplitude: Pulse amplitude (peak value)
+  position: Pulse/peak position within bx
+  tot: Time over Threshold
+  """
+  def __init__( self, orbit, bx, amplitude, position, tot ):
+    self.orbit = orbit
+    self.bx = bx
+    self.amplitude = amplitude
+    self.position = position
+    self.tot = tot
+
+class waveform( object ):
+  """
+  The pulse() class is describing a detected pulse (event).
+  orbit: Orbit number
+  bx: Bunch crossing number of respective orbit.
+  type: sample or derivative
+  waveform: itself
+  """
+  def __init__( self, orbit, bx, type, waveform ):
+    self.orbit = orbit
+    self.bx = bx
+    self.type = type
+    self.waveform = waveform
 
 def string_color( strng, color ):
   """
@@ -34,7 +63,7 @@ def read_binary( file_object, chunk_size ):
       break
     yield data
 
-def write_pulses( filename, pulses):
+def write_pulses( filename, pulses, waveforms = []):
   if not filename.endswith(".csv"):
     filename += ".csv"
   with open( filename , 'w') as f:
@@ -44,6 +73,12 @@ def write_pulses( filename, pulses):
       f.write( str(pulse.amplitude) + ",")
       f.write( str(pulse.position) + ",")
       f.write( str(pulse.tot) + ",")
+      f.write("\n")
+    for waveform in waveforms:
+      f.write(str(waveform.orbit) + ",")
+      f.write(str(waveform.bx) + ",")
+      f.write(str(waveform.type) + ",")
+      f.write(str(waveform.waveform) + ",")
       f.write("\n")
 
 ## Make some common no_tp function?
@@ -93,7 +128,7 @@ def read_pulses( filename, no_tp=False, tp_start=248 ,tp_stop=260 ):
         if int(row[1]) < tp_start or int(row[1]) > tp_stop:
           pos_histogram[ int(row[3]) ] += 1
       else:
-        pls = p.pulse( orbit=int(row[0]), bx=int(row[1]), amplitude=int(row[2]), position=int(row[3]), tot=0 )
+        pls = pulse( orbit=int(row[0]), bx=int(row[1]), amplitude=int(row[2]), position=int(row[3]), tot=0 )
         pls.tot = int( row[4] ) if isinstance(row[4], int) else 0
         pulses.append( pls )
   return pulses
@@ -136,4 +171,34 @@ def snrd( in_data, win_size=7 ):
     deriv.append( snrd )
   deriv.extend( [0] * wing )
   return deriv
+
+class RingBuffer:
+  """ class that implements a not-yet-full buffer """
+  def __init__(self, size_max):
+    self.max = size_max
+    self.data = []
+
+  class __Full:
+    """ class that implements a full buffer """
+    def append(self, x):
+      """ Append an element overwriting the oldest one. """
+      self.data[self.cur] = x
+      self.cur = (self.cur + 1) % self.max
+
+    def get(self):
+      """ return list of elements in correct order """
+      return self.data[self.cur:] + self.data[:self.cur]
+
+  def append(self, x):
+    """append an element at the end of the buffer"""
+    self.data.append(x)
+    if len(self.data) == self.max:
+      self.cur = 0
+      # Permanently change self's class from non-full to full
+      self.__class__ = self.__Full
+
+  def get(self):
+    """ Return a list of elements from the oldest to the newest. """
+    return self.data
+
 

@@ -2,11 +2,13 @@ import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import Timer, RisingEdge, ReadOnly
 from cocotb.regression import TestFactory
+from cocotb.binary import BinaryRepresentation
 import math
 import struct
 import peakfinder_utils as pfu
 import tables
 import matplotlib.pyplot as plt
+import numpy as np
 
 class PeakfinderTB( object ):
   """
@@ -98,6 +100,8 @@ class PeakfinderTB( object ):
     """
     self.dut._log.info(pfu.string_color("Resetting DUT.", "blue"))
     rst.value = 1
+    for i in range(self.NSAMP):
+      self.dut.samples[i].value = 128
     for i in range(duration):
       yield RisingEdge(clk)
     rst.value = 0
@@ -174,6 +178,7 @@ class PeakfinderTB( object ):
       sample_converted = [x.integer for x in self.sample_buffer.get()[0]]
       self.waveforms.append(pfu.waveform(orbit=self.orb_cnt, bx=self.bx_cnt, type="sample", waveform=sample_converted))
       derivative_converted = [x.signed_integer for x in self.deriv_buffer.get()[0]]
+      derivative_converted.reverse()
       self.waveforms.append(pfu.waveform(orbit=self.orb_cnt, bx=self.bx_cnt, type="derivative", waveform=derivative_converted))
       trig = True
       while trig:
@@ -183,7 +188,7 @@ class PeakfinderTB( object ):
         self.deriv_buffer.append(self.dut.derivative_peakfinder_inst.deriv_s.value)
         yield ReadOnly()
         if int(self.dut.peaks) > 0:
-          for i in range( self.dut.NPEAKSMAX ):
+          for i in range( self.dut.NPEAKSMAX.value ):
             if self.dut.peaks[i]:
               # self.dut._log.info( pfu.string_color("CONSECUTIVE", "yellow") )
               self.consec_cnt += 1
@@ -324,7 +329,7 @@ def parallel_test( dut, iter_max=2 ):
   pfu.write_pulses( "../results/PARALLELTEST"+tb.input_filename+"_lvlthr"+str(level_threshold)+"_totthr"+str(tot_threshold), tb.pulses )
 
 @cocotb.test()
-def derivative_test( dut, iter_max=2 ):
+def derivative_test( dut, iter_max=100 ):
   """
   Parallel_analyzer.vhd basic test function
   """
@@ -348,7 +353,7 @@ def derivative_test( dut, iter_max=2 ):
   # Setting thresholds
   dut._log.info(pfu.string_color("Setting thresholds.", "blue"))
   top = 1
-  deriv_thr = 2
+  deriv_thr = 5
   val_thr = 40
   # Bin LUTs
   lut = [int((i * tb.NBINS) / tb.NSAMP) for i in range(tb.NSAMP)]
@@ -379,10 +384,29 @@ def derivative_test( dut, iter_max=2 ):
   tb.input_process()
   # inject
   while True:
+    # Orbit
+    dut._log.info("Injecting orbit # " + str(tb.orb_cnt))
     # count orbits
     tb.orb_cnt += 1
     if iter_max > 0 and tb.orb_cnt > iter_max: break
-    data = tb.input_get_next_orbit()
+    doSweep = True
+    if not doSweep:
+      data = tb.input_get_next_orbit()
+    else:
+      if tb.orb_cnt < 10:
+        data = np.ones(tb.orb_size*tb.NSAMP)
+        data = data*128 # baseline
+        rise_step = 4
+        rise_width = 8
+        fall_rise_ratio = 4
+        bx_id = 200
+        offset = 20
+        for i in range(rise_width):
+          data[bx_id*tb.NSAMP + offset + tb.orb_cnt + i] = data[bx_id*tb.NSAMP + offset + tb.orb_cnt + i - 1] + rise_step
+        for i in range(fall_rise_ratio*rise_width):
+          data[bx_id * tb.NSAMP + offset + tb.orb_cnt + rise_width + i] = data[bx_id * tb.NSAMP + offset + tb.orb_cnt + rise_width + i - 1] - int(rise_step/fall_rise_ratio)
+      else:
+        data = []
     if len(data) == 0: break
     # Feed data
     yield tb.drive_samples(clk=dut.clk, input_signal=dut.samples, data=data)

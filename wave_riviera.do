@@ -1,0 +1,1 @@
+wave sim:/derivative_peakfinder_wrapper/derivative_peakfinder_inst/*

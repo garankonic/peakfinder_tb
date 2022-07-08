@@ -46,6 +46,9 @@ endif
 ## Specify simulation time step
 ifeq ($(SIM),riviera)
     ACOM_ARGS = -2002
+    ifdef GUI
+	    SCRIPT_FILE = wave_riviera.do
+    endif
 else ifeq ($(SIM),modelsim)
     VSIM_ARGS = -t 1ps
 endif
